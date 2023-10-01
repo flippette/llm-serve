@@ -1,0 +1,31 @@
+[package]
+name = "llm-serve"
+version = "0.1.0"
+edition = "2021"
+authors = ["flippette <quangdatle2006@outlook.com>"]
+license = "Unlicense"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+color-eyre = "0.6"
+eyre = "0.6"
+indicatif = "0.17"
+log = "0.4"
+owo-colors = "3.5"
+pretty_env_logger = "0.5"
+rand = "0.8"
+smol = "1.3"
+string_template = "0.2"
+
+[dependencies.llm]
+git = "https://github.com/rustformers/llm.git"
+default-features = false
+features = ["models"]
+
+[features]
+default = []
+cublas = ["llm/cublas"]
+clblast = ["llm/clblast"]
+
+[profile.dev.package.ggml-sys]
+opt-level = 3
