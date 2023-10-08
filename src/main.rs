@@ -5,6 +5,7 @@ use llm::{Model, ModelArchitecture};
 use log::{info, Level, LevelFilter};
 use owo_colors::{AnsiColors, OwoColorize};
 use smol::{
+    future::yield_now,
     io::{self, BufReader},
     net::{TcpListener, TcpStream},
     prelude::*,
@@ -12,7 +13,7 @@ use smol::{
 };
 use std::{
     cell::OnceCell, collections::HashMap, convert::Infallible, fs, io::Write, net::SocketAddr,
-    path::PathBuf, thread, time::Instant,
+    path::PathBuf, sync::Arc, thread, time::Instant,
 };
 use string_template::Template;
 
@@ -46,7 +47,7 @@ fn main() -> Result<()> {
     let tensor_load_msg = OnceCell::new();
     let mut last_tensor_loaded = 0;
     info!("loading model");
-    let model = llm::load_dynamic(
+    let model = Arc::from(llm::load_dynamic(
         args.model_arch,
         &args.model,
         llm::TokenizerSource::Embedded,
@@ -88,7 +89,7 @@ fn main() -> Result<()> {
                 info!("loaded model ({file_size}B, {tensor_count} tensors)");
             }
         },
-    )?;
+    )?);
     let prompt_fmt = Template::new(&fs::read_to_string(args.prompt_template)?);
 
     let executor = LocalExecutor::new();
@@ -98,7 +99,7 @@ fn main() -> Result<()> {
         while let Some(Ok(stream)) = socket.incoming().next().await {
             executor
                 .spawn(handler(
-                    &*model,
+                    Arc::clone(&model),
                     stream,
                     args.batch_size,
                     args.threads,
@@ -132,7 +133,7 @@ struct Args {
 }
 
 async fn handler(
-    model: &dyn Model,
+    model: Arc<dyn Model>,
     stream: TcpStream,
     n_batch: usize,
     n_threads: usize,
@@ -158,17 +159,29 @@ async fn handler(
 
         let timer = Instant::now();
 
-        session.feed_prompt(model, &prompt, &mut llm::OutputRequest::default(), |_| {
-            Ok::<_, Infallible>(llm::InferenceFeedback::Continue)
-        })?;
+        let model_feed = Arc::clone(&model);
+        session = smol::unblock(move || {
+            session
+                .feed_prompt(
+                    &*model_feed,
+                    &prompt,
+                    &mut llm::OutputRequest::default(),
+                    |_| Ok::<_, Infallible>(llm::InferenceFeedback::Continue),
+                )
+                .unwrap();
+
+            session
+        })
+        .await;
 
         while let Ok(tok) = session.infer_next_token(
-            model,
+            &*model,
             &llm::InferenceParameters::default(),
             &mut llm::OutputRequest::default(),
             &mut rand::thread_rng(),
         ) {
             writer.write_all(&tok).await?;
+            yield_now().await;
         }
 
         let elapsed = timer.elapsed();
