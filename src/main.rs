@@ -13,7 +13,7 @@ use smol::{
 };
 use std::{
     cell::OnceCell, collections::HashMap, convert::Infallible, fs, io::Write, net::SocketAddr,
-    path::PathBuf, sync::Arc, thread, time::Instant,
+    path::PathBuf, time::Instant,
 };
 use string_template::Template;
 
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
     let tensor_load_msg = OnceCell::new();
     let mut last_tensor_loaded = 0;
     info!("loading model");
-    let model = Arc::from(llm::load_dynamic(
+    let model = llm::load_dynamic(
         args.model_arch,
         &args.model,
         llm::TokenizerSource::Embedded,
@@ -89,7 +89,7 @@ fn main() -> Result<()> {
                 info!("loaded model ({file_size}B, {tensor_count} tensors)");
             }
         },
-    )?);
+    )?;
     let prompt_fmt = Template::new(&fs::read_to_string(args.prompt_template)?);
 
     let executor = LocalExecutor::new();
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
         while let Some(Ok(stream)) = socket.incoming().next().await {
             executor
                 .spawn(handler(
-                    Arc::clone(&model),
+                    &*model,
                     stream,
                     args.batch_size,
                     args.threads,
@@ -128,12 +128,12 @@ struct Args {
     gpu_layers: Option<usize>,
     #[arg(short, long, default_value_t = 8)]
     batch_size: usize,
-    #[arg(short, long, default_value_t = thread::available_parallelism().unwrap().get())]
+    #[arg(short, long, default_value_t = 2)]
     threads: usize,
 }
 
 async fn handler(
-    model: Arc<dyn Model>,
+    model: &dyn Model,
     stream: TcpStream,
     n_batch: usize,
     n_threads: usize,
@@ -159,27 +159,23 @@ async fn handler(
 
         let timer = Instant::now();
 
-        let model_feed = Arc::clone(&model);
-        session = smol::unblock(move || {
-            session
-                .feed_prompt(
-                    &*model_feed,
-                    &prompt,
-                    &mut llm::OutputRequest::default(),
-                    |_| Ok::<_, Infallible>(llm::InferenceFeedback::Continue),
-                )
-                .unwrap();
+        for word in prompt.split_whitespace() {
+            session.feed_prompt(model, word, &mut llm::OutputRequest::default(), |_| {
+                Ok::<_, Infallible>(llm::InferenceFeedback::Continue)
+            })?;
+            yield_now().await;
+        }
 
-            session
-        })
-        .await;
+        loop {
+            let Ok(tok) = session.infer_next_token(
+                model,
+                &llm::InferenceParameters::default(),
+                &mut llm::OutputRequest::default(),
+                &mut rand::thread_rng(),
+            ) else {
+                break;
+            };
 
-        while let Ok(tok) = session.infer_next_token(
-            &*model,
-            &llm::InferenceParameters::default(),
-            &mut llm::OutputRequest::default(),
-            &mut rand::thread_rng(),
-        ) {
             writer.write_all(&tok).await?;
             yield_now().await;
         }
