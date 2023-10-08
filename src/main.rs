@@ -12,8 +12,16 @@ use smol::{
     LocalExecutor,
 };
 use std::{
-    cell::OnceCell, collections::HashMap, convert::Infallible, fs, io::Write, net::SocketAddr,
-    path::PathBuf, sync::Arc, thread, time::Instant,
+    cell::OnceCell,
+    collections::HashMap,
+    convert::Infallible,
+    fs,
+    io::Write,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread,
+    time::Instant,
 };
 use string_template::Template;
 
@@ -139,11 +147,13 @@ async fn handler(
     n_threads: usize,
     prompt_fmt: &Template,
 ) -> Result<()> {
-    let mut session = model.start_session(llm::InferenceSessionConfig {
-        n_batch,
-        n_threads,
-        ..Default::default()
-    });
+    let session = Arc::new(Mutex::new(model.start_session(
+        llm::InferenceSessionConfig {
+            n_batch,
+            n_threads,
+            ..Default::default()
+        },
+    )));
 
     let (reader, mut writer) = io::split(stream);
     let mut lines = BufReader::new(reader).lines();
@@ -160,26 +170,33 @@ async fn handler(
         let timer = Instant::now();
 
         let model_feed = Arc::clone(&model);
-        session = smol::unblock(move || {
-            session
-                .feed_prompt(
-                    &*model_feed,
-                    &prompt,
-                    &mut llm::OutputRequest::default(),
-                    |_| Ok::<_, Infallible>(llm::InferenceFeedback::Continue),
-                )
-                .unwrap();
-
-            session
+        let session_feed = Arc::clone(&session);
+        smol::unblock(move || {
+            session_feed.lock().unwrap().feed_prompt(
+                &*model_feed,
+                &prompt,
+                &mut llm::OutputRequest::default(),
+                |_| Ok::<_, Infallible>(llm::InferenceFeedback::Continue),
+            )
         })
-        .await;
+        .await?;
 
-        while let Ok(tok) = session.infer_next_token(
-            &*model,
-            &llm::InferenceParameters::default(),
-            &mut llm::OutputRequest::default(),
-            &mut rand::thread_rng(),
-        ) {
+        loop {
+            let model_infer = Arc::clone(&model);
+            let session_infer = Arc::clone(&session);
+            let Ok(tok) = smol::unblock(move || {
+                session_infer.lock().unwrap().infer_next_token(
+                    &*model_infer,
+                    &llm::InferenceParameters::default(),
+                    &mut llm::OutputRequest::default(),
+                    &mut rand::thread_rng(),
+                )
+            })
+            .await
+            else {
+                break;
+            };
+
             writer.write_all(&tok).await?;
             yield_now().await;
         }
