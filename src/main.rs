@@ -66,7 +66,9 @@ fn main() -> Result<()> {
         },
         |progress| match progress {
             llm::LoadProgress::HyperparametersLoaded => info!("loaded hyperparams"),
-            llm::LoadProgress::ContextSize { bytes } => info!("context size: {bytes}B"),
+            llm::LoadProgress::ContextSize { bytes } => {
+                info!("context size: {}MB", bytes / 1024_usize.pow(2))
+            }
             llm::LoadProgress::TensorLoaded {
                 current_tensor,
                 tensor_count,
@@ -86,7 +88,10 @@ fn main() -> Result<()> {
                 bar.get()
                     .expect("progress bar should have been initialized by now")
                     .finish_and_clear();
-                info!("loaded model ({file_size}B, {tensor_count} tensors)");
+                info!(
+                    "loaded model ({}MB, {tensor_count} tensors)",
+                    file_size / 1024_u64.pow(2)
+                );
             }
         },
     )?;
