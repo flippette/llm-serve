@@ -13,7 +13,7 @@ use smol::{
 };
 use std::{
     cell::OnceCell, collections::HashMap, convert::Infallible, fs, io::Write, net::SocketAddr,
-    path::PathBuf, time::Instant,
+    path::PathBuf,
 };
 use string_template::Template;
 
