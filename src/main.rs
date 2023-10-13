@@ -162,8 +162,6 @@ async fn handler(
         args.insert("prompt", next_line.as_str());
         let prompt = prompt_fmt.render(&args);
 
-        let timer = Instant::now();
-
         for word in prompt.split_whitespace() {
             session.feed_prompt(model, word, &mut llm::OutputRequest::default(), |_| {
                 Ok::<_, Infallible>(llm::InferenceFeedback::Continue)
@@ -184,11 +182,5 @@ async fn handler(
             writer.write_all(&tok).await?;
             yield_now().await;
         }
-
-        let elapsed = timer.elapsed();
-
-        writer
-            .write_all(format!("\r\n(took {:.2}s)\r\n", elapsed.as_secs_f64()).as_bytes())
-            .await?;
     }
 }
